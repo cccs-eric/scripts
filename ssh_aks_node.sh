@@ -3,24 +3,89 @@
 #
 # See https://docs.microsoft.com/en-us/azure/aks/ssh#create-the-ssh-connection for details
 #
-SUBSCRIPTION=$1
-RESOURCE_GROUP=$2
-CLUSTER_NAME=$3
-if [ -z "${SUBSCRIPTION}" ]; then
-	echo "Missing SUBSCRIPTION parameter.  Something like Chimera-U, Chimera-U-DEV, Chimera-PB, Chimera-PB-DEV"
-	exit
-fi
-if [ -z "${RESOURCE_GROUP}" ]; then
-        echo "Missing RESOURCE_GROUP parameter.  Something like AnalyticalPlatform"
-        exit
-fi
-if [ -z "${CLUSTER_NAME}" ]; then
-        echo "Missing CLUSTER_NAME parameter.  Something like scylladev, scyllaprod, hogwarts-aks-pb"
-        exit
+
+SUBSCRIPTION=""
+RESOURCE_GROUP="AnalyticalPlatform"
+CLUSTER_NAME=""
+USE_YUBI_KEY=0
+
+function usage() {
+    echo "Usage:"
+    echo "  Helper script to allow for ssh'ing into a kubernetes node running"
+    echo "  in AKS.  The ssh public will be copied to the nodeset"
+    echo ""
+    echo "    ./ssh_aks_node.sh \\"
+    echo "         -s|--subscription <subscription> (Something like Chimera-U,"
+    echo "                           Chimera-U-DEV, Chimera-PB, Chimera-PB-DEV)"
+    echo "         -r|--resource-group <resource group> (The default resource"
+    echo "                                         group is AnalyticalPlatform)"
+    echo "         -c|--cluster-name <cluster name> (Something like scylladev,"
+    echo "                                         scyllaprod, hogwarts-aks-pb)"
+    echo "         -y|--use-yubi-key (optional empty parameter, tell the script"
+    echo "                               to get the ssh key from your yubi key)"
+    echo ""
+    echo "  If --use-yubi-key is not used then the script will look for your"
+    echo "  ssh key in ${HOME}/.ssh/id_rsa.pub"
+    echo ""
+    echo "  If --use-yubi-key is set then the script will try finding the ssh"
+    echo "  key using gpg --export-ssh-key ${USER}, if that fails it will"
+    echo "  prompt for a unique identifier for your key after listing all"
+    echo "  available keys"
+
+    exit 1
+}
+
+if [[ $# -eq 0 ]]; then
+    usage
 fi
 
+while [[ $# -gt 0 ]]; do
+    ARG="$1"
 
-CLUSTER_RESOURCE_GROUP=$(az aks show --subscription ${SUBSCRIPTION} --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --query nodeResourceGroup -o tsv)
+    case $ARG in
+        -s|--subscription)
+            SUBSCRIPTION="$2"
+            shift
+            shift
+            ;;
+        -r|--resource-group)
+            RESOURCE_GROUP="$2"
+            shift
+            shift
+            ;;
+        -c|--cluster-name)
+            CLUSTER_NAME="$2"
+            shift
+            shift
+            ;;
+        -y|--use-yubi-key)
+            USE_YUBI_KEY=1
+            shift
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+if [[ -z "${SUBSCRIPTION}" ]]; then
+    printf "Missing a subscription\n\n"
+    usage
+fi
+
+if [[ -z "${RESOURCE_GROUP}" ]]; then
+    printf "Missing a resource group\n\n"
+    usage
+fi
+
+if [[ -z "${CLUSTER_NAME}" ]]; then
+    printf "Missing a cluster name\n\n"
+    usage
+fi
+
+CLUSTER_RESOURCE_GROUP="$(az aks show --subscription ${SUBSCRIPTION} --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --query nodeResourceGroup -o tsv)"
+# running in wsl with windows az cli returns CRLF instead of just LF, removing CR from string if it exists
+CLUSTER_RESOURCE_GROUP=${CLUSTER_RESOURCE_GROUP%$'\r'}
 echo "Auto-discovered AKS RG for ${CLUSTER_NAME} is \"${CLUSTER_RESOURCE_GROUP}\""
 
 echo
@@ -32,6 +97,23 @@ echo
 read -p "Enter the name of the set you want to access: " SCALE_SET_NAME
 echo "${SCALE_SET_NAME}"
 
+if [[ ${USE_YUBI_KEY} != "0" ]]; then
+    if gpg --export-ssh-key ${USER} >/dev/null 2>&1; then
+        SSH_KEY=$(gpg --export-ssh-key ${USER})
+    else
+        gpg --list-keys
+        read -p "Enter unique identifier for gpg, list is above: " SSH_USER
+        SSH_KEY=$(gpg --export-ssh-key ${SSH_USER})
+    fi
+elif [[ -f ${HOME}/.ssh/id_rsa.pub ]]; then
+    SSH_KEY=$(cat ${HOME}/.ssh/id_rsa.pub)
+fi
+
+if [[ -z ${SSH_KEY} ]]; then
+    echo "Unable to find an ssh key to use, exiting..."
+    exit 1
+fi
+
 az vmss extension set  \
     --subscription ${SUBSCRIPTION} \
     --resource-group $CLUSTER_RESOURCE_GROUP \
@@ -39,7 +121,7 @@ az vmss extension set  \
     --name VMAccessForLinux \
     --publisher Microsoft.OSTCExtensions \
     --version 1.4 \
-    --protected-settings "{\"username\":\"azureuser\", \"ssh_key\":\"$(cat ~/.ssh/id_rsa.pub)\"}" > az_vmss_ext.log
+    --protected-settings "{\"username\":\"azureuser\", \"ssh_key\":\"${SSH_KEY}\"}" > az_vmss_ext.log
 if [ $? != 0 ]; then
 	echo "Failed at:"
 	echo "az vmss extension set --subscription ${SUBSCRIPTION} --resource-group $CLUSTER_RESOURCE_GROUP --vmss-name $SCALE_SET_NAME --name VMAccessForLinux --publisher Microsoft.OSTCExtensions --version 1.4 --protected-settings..."
@@ -56,7 +138,7 @@ if [ $? != 0 ]; then
         exit
 fi
 
-kubectl get nodes -o wide
+kubectl get nodes -o wide | grep ${SCALE_SET_NAME}
 
 echo "To SSH to a node, use it's IP address and the command"
 echo " ssh azureuser@[Node IP]"
