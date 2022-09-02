@@ -107,6 +107,10 @@ if [[ ${USE_YUBI_KEY} != "0" ]]; then
     fi
 elif [[ -f ${HOME}/.ssh/id_rsa.pub ]]; then
     SSH_KEY=$(cat ${HOME}/.ssh/id_rsa.pub)
+
+elif [[ -f ${HOME}/.ssh/id_ed25519.pub ]]; then
+    SSH_KEY=$(cat ${HOME}/.ssh/id_ed25519.pub)
+
 fi
 
 if [[ -z ${SSH_KEY} ]]; then
