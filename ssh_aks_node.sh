@@ -12,15 +12,15 @@ USE_YUBI_KEY=0
 function usage() {
     echo "Usage:"
     echo "  Helper script to allow for ssh'ing into a kubernetes node running"
-    echo "  in AKS.  The ssh public will be copied to the nodeset"
+    echo "  in AKS.  The ssh public will be copied to the node set."
     echo ""
     echo "    ./ssh_aks_node.sh \\"
     echo "         -s|--subscription <subscription> (Something like Chimera-U,"
     echo "                           Chimera-U-DEV, Chimera-PB, Chimera-PB-DEV)"
-    echo "         -r|--resource-group <resource group> (The default resource"
-    echo "                                         group is AnalyticalPlatform)"
-    echo "         -c|--cluster-name <cluster name> (Something like scylladev,"
-    echo "                                         scyllaprod, hogwarts-aks-pb)"
+    echo "         -r|--resource-group <resource group> (Something like AnalyticalPlatformUDev,"
+    echo "                           AnalyticalPlatform)"
+    echo "         -c|--cluster-name <cluster name> (Something like hogwarts-aks-u-pilot,"
+    echo "                           hogwarts-aks-u-dev, hogwarts-aks-u-prod, hogwarts-aks-pb)"
     echo "         -y|--use-yubi-key (optional empty parameter, tell the script"
     echo "                               to get the ssh key from your yubi key)"
     echo ""
@@ -84,15 +84,26 @@ if [[ -z "${CLUSTER_NAME}" ]]; then
 fi
 
 CLUSTER_RESOURCE_GROUP="$(az aks show --subscription ${SUBSCRIPTION} --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --query nodeResourceGroup -o tsv)"
+if [ $? != 0 ]; then
+    echo "Failed at:"
+    echo "az aks show --subscription ${SUBSCRIPTION} --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --query nodeResourceGroup -o tsv"
+    exit 1
+fi
+
 # running in wsl with windows az cli returns CRLF instead of just LF, removing CR from string if it exists
 CLUSTER_RESOURCE_GROUP=${CLUSTER_RESOURCE_GROUP%$'\r'}
-echo "Auto-discovered AKS RG for ${CLUSTER_NAME} is \"${CLUSTER_RESOURCE_GROUP}\""
+echo "Auto-discovered AKS resource group for ${CLUSTER_NAME} is \"${CLUSTER_RESOURCE_GROUP}\""
 
 echo
 az vmss list \
     --subscription ${SUBSCRIPTION} \
     --resource-group ${CLUSTER_RESOURCE_GROUP} \
     -o table
+if [ $? != 0 ]; then
+    echo "Failed to list VM ScaleSets from subscription ${SUBSCRIPTION}, resource-group ${CLUSTER_RESOURCE_GROUP}:"
+    echo "az vmss list --subscription ${SUBSCRIPTION} --resource-group ${CLUSTER_RESOURCE_GROUP} -o table"
+    exit 1
+fi
 echo
 read -p "Enter the name of the set you want to access: " SCALE_SET_NAME
 echo "${SCALE_SET_NAME}"
@@ -137,9 +148,9 @@ az vmss update-instances --instance-ids '*' \
     --resource-group $CLUSTER_RESOURCE_GROUP \
     --name $SCALE_SET_NAME > az_vmss_update.log
 if [ $? != 0 ]; then
-	echo "Failed at:"
-	echo "az vmss update-instances --instance-ids '*' --resource-group $CLUSTER_RESOURCE_GROUP --name $SCALE_SET_NAME"
-        exit
+    echo "Failed at:"
+    echo "az vmss update-instances --instance-ids '*' --resource-group $CLUSTER_RESOURCE_GROUP --name $SCALE_SET_NAME"
+    exit 1
 fi
 
 kubectl get nodes -o wide | grep ${SCALE_SET_NAME}
